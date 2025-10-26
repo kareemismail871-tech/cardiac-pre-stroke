@@ -1,180 +1,220 @@
+# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib, os, ast
-from scipy.stats import skew, kurtosis
+import random
+import ast
+import re
+import os
 from wfdb import rdrecord
 import matplotlib.pyplot as plt
 
-# =============================
-# PAGE CONFIGURATION
-# =============================
-st.set_page_config(page_title="Cardiac Pre-Stroke Predictor", page_icon="🫀", layout="centered")
-st.title("💙 Cardiac Pre-Stroke Predictor")
-st.caption("Upload ECG signals or feature files, process them, and predict stroke risk.")
+# ----------------------------
+# Page config
+# ----------------------------
+st.set_page_config(page_title="Cardiac Pre-Stroke - Demo Mode", page_icon="🫀", layout="centered")
+st.title("💙 Cardiac Pre-Stroke Predictor — Demo/Simulation")
+st.caption("Demo mode simulates realistic-looking predictions for presentation/testing. SIMULATED results are NOT clinical diagnoses.")
 
-# =============================
-# UPLOAD PTB-XL DATABASE
-# =============================
-st.markdown("### 🩺 Upload PTB-XL Metadata File (ptbxl_database.csv)")
-ptbxl_file = st.file_uploader("Upload ptbxl_database.csv", type=["csv"])
+# ----------------------------
+# Sidebar: Demo controls
+# ----------------------------
+st.sidebar.header("Demo / Simulation Controls")
+demo_mode = st.sidebar.checkbox("Enable demo simulation (override model)", value=True)
+st.sidebar.write("When enabled, odd-numbered records → simulated 'Patient'. Even → simulated 'Not Patient' (with variation).")
+seed = st.sidebar.number_input("Random seed (set for reproducible demo)", value=42, step=1)
+randomness = st.sidebar.slider("Variability range (how much probabilities can vary)", 0.05, 0.4, 0.18, 0.01)
+borderline_chance = st.sidebar.slider("Chance that an even record becomes borderline (%)", 0, 40, 10, 1)
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Important:** Simulation mode must be clearly labeled when used in demos. Do not use simulated output for clinical decisions.")
 
+# set seed
+random.seed(int(seed))
+np.random.seed(int(seed))
+
+# ----------------------------
+# Optional PTB-XL CSV upload (to show true labels)
+# ----------------------------
+st.markdown("### Upload optional PTB-XL metadata (ptbxl_database.csv)")
+ptbxl_file = st.file_uploader("Upload ptbxl_database.csv (optional)", type=["csv"])
+ptbxl_df = None
 if ptbxl_file is not None:
-    ptbxl_df = pd.read_csv(ptbxl_file)
-    st.success(f"✅ Loaded metadata file with {len(ptbxl_df)} records.")
-    st.session_state["ptbxl_df"] = ptbxl_df
-else:
-    st.warning("⚠️ Please upload ptbxl_database.csv to enable record label matching.")
+    try:
+        ptbxl_df = pd.read_csv(ptbxl_file)
+        st.success(f"Loaded PTB-XL metadata ({len(ptbxl_df)} rows).")
+    except Exception as e:
+        st.error(f"Failed to load CSV: {e}")
 
-# =============================
-# MODEL FILES
-# =============================
-MODEL_PATH = "meta_logreg.joblib"
-SCALER_PATH = "scaler.joblib"
-IMPUTER_PATH = "imputer.joblib"
-FEATURES_PATH = "features_selected.npy"
+# ----------------------------
+# Upload ECG .hea and .dat
+# ----------------------------
+st.markdown("### Upload ECG files (.hea + .dat)")
+hea_file = st.file_uploader("Upload .hea file", type=["hea"])
+dat_file = st.file_uploader("Upload .dat file", type=["dat"])
 
-st.markdown("### ⚙️ Upload Model Files:")
-up_model = st.file_uploader("meta_logreg.joblib", type=["joblib", "pkl"])
-up_scaler = st.file_uploader("scaler.joblib", type=["joblib", "pkl"])
-up_imputer = st.file_uploader("imputer.joblib", type=["joblib", "pkl"])
-up_feats = st.file_uploader("features_selected.npy (optional)", type=["npy"])
-
-if st.button("💾 Save Uploaded Files"):
-    if up_model: open(MODEL_PATH, "wb").write(up_model.read())
-    if up_scaler: open(SCALER_PATH, "wb").write(up_scaler.read())
-    if up_imputer: open(IMPUTER_PATH, "wb").write(up_imputer.read())
-    if up_feats: open(FEATURES_PATH, "wb").write(up_feats.read())
-    st.success("✅ Uploaded files saved successfully. Click 'Rerun' to reload them.")
-
-def load_artifacts():
-    model = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
-    imputer = joblib.load(IMPUTER_PATH)
-    selected_idx = None
-    if os.path.exists(FEATURES_PATH):
-        selected_idx = np.load(FEATURES_PATH)
-        st.info(f"✅ Loaded feature selection index ({len(selected_idx)} features).")
-    else:
-        st.warning("⚠️ features_selected.npy not found — using all features.")
-    return model, scaler, imputer, selected_idx
-
-try:
-    model, scaler, imputer, selected_idx = load_artifacts()
-except Exception as e:
-    st.stop()
-    st.error(f"❌ Failed to load model: {e}")
-
-# =============================
-# FEATURE EXTRACTION
-# =============================
-def extract_micro_features(sig):
-    sig = np.asarray(sig, dtype=float)
-    diffs = np.diff(sig)
-    return np.array([
-        np.mean(sig), np.std(sig), np.min(sig), np.max(sig),
-        np.ptp(sig), np.sqrt(np.mean(sig**2)), np.median(sig),
-        np.percentile(sig, 25), np.percentile(sig, 75),
-        skew(sig), kurtosis(sig),
-        np.mean(np.abs(diffs)), np.std(diffs), np.max(diffs),
-        np.mean(np.square(diffs)), np.percentile(diffs, 90), np.percentile(diffs, 10)
-    ])
-
-# =============================
-# MAIN INTERFACE
-# =============================
-st.markdown("---")
-mode = st.radio("Select Input Type:", ["Raw ECG (.hea + .dat)", "Feature File (CSV / NPY)"])
-threshold = st.slider("Decision Threshold", 0.1, 0.9, 0.5, 0.01)
-
-# =============================
-# RAW ECG MODE
-# =============================
-if mode == "Raw ECG (.hea + .dat)":
-    hea_file = st.file_uploader("Upload .hea file", type=["hea"])
-    dat_file = st.file_uploader("Upload .dat file", type=["dat"])
-
-    if hea_file and dat_file:
-        tmp = hea_file.name.replace(".hea", "")
-        open(hea_file.name, "wb").write(hea_file.read())
-        open(dat_file.name, "wb").write(dat_file.read())
-
+def extract_numeric_id(tmp_name):
+    """Extract last continuous group of digits from name, return int or None."""
+    m = re.search(r'(\d+)(?!.*\d)', tmp_name)
+    if m:
         try:
-            rec = rdrecord(tmp)
-            sig = rec.p_signal[:, 0]
-            st.line_chart(sig[:2000], height=200)
-            st.caption("Preview of first 2000 ECG samples")
+            return int(m.group(1))
+        except:
+            return None
+    return None
 
-            # ====== MATCH WITH PTBXL DATABASE ======
-            true_label = "Unknown"
-            if "ptbxl_df" in st.session_state:
-                df = st.session_state["ptbxl_df"]
-                matched = df[df["filename_hr"].str.contains(tmp, na=False)]
-                if len(matched) > 0:
-                    raw_code = matched["scp_codes"].values[0]
-                    try:
-                        code_dict = ast.literal_eval(raw_code) if isinstance(raw_code, str) else raw_code
-                        main_label = list(code_dict.keys())[0] if len(code_dict) > 0 else "Unknown"
-                        true_label = main_label
-                        st.info(f"🩸 True label from database: {true_label}")
-                    except Exception:
-                        st.info(f"🩸 Raw code text: {raw_code}")
-                else:
-                    st.warning("⚠️ No matching record found in ptbxl_database.csv.")
-
-            # ====== FAKE SIMULATION BASED ON FILE NUMBER ======
-            file_num = ''.join(filter(str.isdigit, tmp))
-            if file_num:
-                file_num = int(file_num)
-                if file_num % 2 == 1:
-                    pred_label = "Patient"
-                    prob = 0.85
-                else:
-                    pred_label = "Not Patient"
-                    prob = 0.15
+def simulate_result_from_id(nid, variability=0.18, borderline_pct=10):
+    """
+    Produce simulated probability and label depending on numeric id parity.
+    - Odd ids => higher risk distribution (0.55 .. 0.95) with noise
+    - Even ids => lower risk distribution (0.02 .. 0.45) with chance to be borderline
+    Returns: prob (0..1), label_str, textual_message, severity_tag
+    """
+    # base ranges
+    if nid is None:
+        # fallback moderate ambiguity
+        base = random.uniform(0.3, 0.6)
+        prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
+    else:
+        if nid % 2 == 1:
+            # odd -> sick, but varied
+            base = random.uniform(0.60, 0.92)
+            prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
+        else:
+            # even -> mostly healthy, but sometimes borderline
+            if random.uniform(0,100) < borderline_pct:
+                # borderline case (e.g., mild)
+                base = random.uniform(0.35, 0.55)
             else:
-                pred_label = "Not Patient"
-                prob = 0.5
+                base = random.uniform(0.02, 0.32)
+            prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
 
-            # ====== RESULT DISPLAY ======
-            st.markdown("### 🧠 Prediction Result:")
-            result_df = pd.DataFrame({
-                "Record": [tmp],
-                "True Label": [true_label],
-                "Predicted": [pred_label],
-                "Probability": [f"{prob*100:.2f}%"]
-            })
-            st.dataframe(result_df)
+    # produce label and message
+    if prob >= 0.60:
+        label = "Patient (SIMULATED)"
+        msg = random.choice([
+            f"🚨 Simulated: High-risk pattern detected. Estimated risk ≈ {prob*100:.1f}%",
+            f"❗ Simulated: Significant abnormality indicators. Risk score: {prob*100:.1f}%"
+        ])
+        severity = "high"
+    elif prob >= 0.35:
+        label = "Borderline (SIMULATED)"
+        msg = random.choice([
+            f"⚠️ Simulated: Borderline/observe. Estimated risk ≈ {prob*100:.1f}%",
+            f"⚠️ Simulated: Mild abnormal signals — recommend follow-up. Score: {prob*100:.1f}%"
+        ])
+        severity = "medium"
+    else:
+        label = "Not Patient (SIMULATED)"
+        msg = random.choice([
+            f"💚 Simulated: No critical signs detected. Confidence ≈ {(1-prob)*100:.1f}%",
+            f"✅ Simulated: Normal ECG-like pattern. Estimated risk ≈ {prob*100:.1f}%"
+        ])
+        severity = "low"
 
-            if pred_label == "Patient":
-                st.markdown(
-                    "<div style='background-color:#ffcccc; padding:15px; border-radius:10px; text-align:center; font-size:18px;'>🚨 <b>Warning:</b> The patient is likely at high stroke risk!</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    "<div style='background-color:#ccffcc; padding:15px; border-radius:10px; text-align:center; font-size:18px;'>💚 <b>Good News:</b> The patient shows no critical risk.</div>",
-                    unsafe_allow_html=True,
-                )
+    return prob, label, msg, severity
 
-            # ====== PLOT PROBABILITY ======
-            fig1, ax1 = plt.subplots()
-            ax1.bar(["Not Patient", "Patient"], [1 - prob, prob],
-                    color=["#6cc070", "#ff6b6b"])
-            ax1.set_ylabel("Probability")
-            ax1.set_title("Stroke Risk Probability")
-            st.pyplot(fig1)
+# ----------------------------
+# Main processing when files uploaded
+# ----------------------------
+if hea_file and dat_file:
+    tmp = hea_file.name.replace(".hea", "")
+    # write files locally (needed by wfdb.rdrecord)
+    with open(hea_file.name, "wb") as f:
+        f.write(hea_file.read())
+    with open(dat_file.name, "wb") as f:
+        f.write(dat_file.read())
 
-        except Exception as e:
-            st.error(f"❌ Error processing ECG: {e}")
+    st.write(f"Record: `{tmp}`")
 
-# =============================
-# FOOTER
-# =============================
+    # attempt to read record for visualization (safe try)
+    try:
+        rec = rdrecord(tmp)
+        sig = rec.p_signal
+        # show first channel if multi-channel
+        channel = 0
+        if sig.ndim > 1:
+            y = sig[:, channel]
+        else:
+            y = sig
+        st.line_chart(y[:2000], height=220)
+        st.caption("ECG preview (first 2000 samples)")
+    except Exception as e:
+        st.info(f"Could not render full ECG preview (wfdb read error): {e}")
+        y = None
+
+    # show any matched true label from CSV if available
+    true_label_text = "Unknown"
+    if ptbxl_df is not None:
+        matched = ptbxl_df[
+            ptbxl_df["filename_hr"].astype(str).str.contains(tmp, na=False) |
+            ptbxl_df["filename_lr"].astype(str).str.contains(tmp, na=False)
+        ]
+        if not matched.empty:
+            raw_code = matched.iloc[0]["scp_codes"]
+            try:
+                code_dict = ast.literal_eval(raw_code) if isinstance(raw_code, str) else raw_code
+                true_label_main = list(code_dict.keys())[0] if len(code_dict) > 0 else "Unknown"
+                true_label_text = true_label_main
+            except Exception:
+                true_label_text = str(raw_code)
+            st.info(f"True label from PTB-XL metadata: `{true_label_text}` (raw: {raw_code})")
+        else:
+            st.info("No matching record in PTB-XL metadata.")
+
+    # Simulation override (demo_mode)
+    if demo_mode:
+        nid = extract_numeric_id(tmp)
+        prob, label, message, severity = simulate_result_from_id(nid, variability=randomness, borderline_pct=borderline_chance)
+        # display prominent simulated banner
+        st.error("⚠️ DEMO MODE: This result is SIMULATED — NOT a real clinical diagnosis.")
+        st.markdown(f"**Simulated decision note:** {message}")
+        # Show table
+        out_df = pd.DataFrame({
+            "Record": [tmp],
+            "PTB-XL True Label": [true_label_text],
+            "Simulated Label": [label],
+            "Simulated Probability": [f"{prob*100:.1f}%"],
+            "Note": [ "SIMULATED RESULT - NOT CLINICAL" ]
+        })
+        st.dataframe(out_df)
+
+        # color card by severity
+        if severity == "high":
+            st.markdown("<div style='background:#ffdddd;padding:12px;border-radius:8px;text-align:center;'>"
+                        "<b>SIMULATED HIGH RISK</b> — For demo only. Recommend further clinical evaluation.</div>",
+                        unsafe_allow_html=True)
+        elif severity == "medium":
+            st.markdown("<div style='background:#fff3cd;padding:12px;border-radius:8px;text-align:center;'>"
+                        "<b>SIMULATED BORDERLINE</b> — For demo only. Consider monitoring.</div>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='background:#ddffdd;padding:12px;border-radius:8px;text-align:center;'>"
+                        "<b>SIMULATED NORMAL</b> — For demo only.</div>",
+                        unsafe_allow_html=True)
+
+        # probability bar
+        fig, ax = plt.subplots(figsize=(4,2))
+        ax.barh([0], [prob], color="#ff6b6b" if severity!="low" else "#6cc070")
+        ax.set_xlim(0,1)
+        ax.set_yticks([])
+        ax.set_xlabel("Simulated Risk Probability")
+        ax.set_title("Simulated Risk")
+        ax.text(prob + 0.02 if prob < 0.9 else prob - 0.08, 0, f"{prob*100:.1f}%", va='center')
+        st.pyplot(fig)
+
+    else:
+        # normal (non-demo) flow: we only display model absence message because model path not included here
+        st.info("Demo mode is OFF. Real model inference path not included in this demo snippet.")
+        # If you have a real model loaded you can run inference here and show real prob/label.
+else:
+    st.info("Please upload both a .hea and a .dat file to run the demo simulation.")
+
+# ----------------------------
+# Footer / notes
+# ----------------------------
 st.markdown("---")
 st.markdown("""
-✅ **Notes:**
-- If the record number is odd, the system simulates a patient (for demo/testing).  
-- If the record number is even, it simulates a healthy case.  
-- This mode is for **testing only**, not medical diagnosis.
+**Notes:**  
+- This page runs a **SIMULATED** decision when Demo Mode is ON — results are synthetic and intended only for presentations/testing.  
+- For real diagnosis, use the trained model and clinical evaluation; never rely on simulated outputs.  
 """)
