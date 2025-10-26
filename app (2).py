@@ -1,81 +1,86 @@
-import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import random
-import time
+import seaborn as sns
+import matplotlib.animation as animation
 
-st.set_page_config(page_title="Cardiac Pre-Stroke Predictor", page_icon="❤️", layout="centered")
+# ==============================
+# 🎨 إعداد التنسيق والألوان العامة
+# ==============================
+sns.set_style("whitegrid")
+plt.rcParams['figure.facecolor'] = '#f8fafc'
+plt.rcParams['axes.facecolor'] = '#ffffff'
+plt.rcParams['axes.edgecolor'] = '#94a3b8'
+plt.rcParams['axes.titleweight'] = 'bold'
+plt.rcParams['axes.labelcolor'] = '#0f172a'
+plt.rcParams['xtick.color'] = '#334155'
+plt.rcParams['ytick.color'] = '#334155'
+plt.rcParams['font.size'] = 12
 
-# --- HEADER ---
-st.markdown("<h1 style='text-align:center; color:#b22222;'>💓 Cardiac Pre-Stroke Predictor</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center; color:gray;'>Upload ECG data (.hea / .dat) to analyze possible pre-stroke risks</p>", unsafe_allow_html=True)
-st.divider()
+# ==============================
+# ⚙️ إنشاء إشارة ECG تجريبية
+# ==============================
+fs = 360  # تردد العينة (Hz)
+t = np.linspace(0, 2, 2*fs)
+# توليد إشارة ECG مع ضوضاء خفيفة
+ecg = 1.5*np.sin(2*np.pi*1.2*t) + 0.25*np.sin(2*np.pi*20*t) + 0.1*np.random.randn(len(t))
 
-# --- UPLOAD SECTION ---
-uploaded_file = st.file_uploader("📤 Upload ECG File", type=["hea", "dat"])
+# ==============================
+# 📈 الرسم الأول: إشارة ECG ثابتة
+# ==============================
+plt.figure(figsize=(12, 5))
+plt.plot(t, ecg, color='#2563eb', linewidth=2.2, label='ECG Signal')
 
-# Simulate ECG data preview
-def simulate_ecg():
-    t = np.linspace(0, 2, 400)
-    ecg = 0.3*np.sin(2*np.pi*5*t) + 0.7*np.sin(2*np.pi*1.5*t + 0.5)
-    ecg += np.random.normal(0, 0.05, len(t))
-    return t, ecg
+plt.title('Enhanced ECG Signal Visualization', fontsize=16, color='#1e293b', pad=20)
+plt.xlabel('Time (seconds)', fontsize=13)
+plt.ylabel('Amplitude (mV)', fontsize=13)
+plt.legend(facecolor='#e2e8f0', edgecolor='#94a3b8', loc='upper right')
+plt.grid(True, linestyle='--', alpha=0.3)
+plt.tight_layout()
+plt.show()
 
-# --- MAIN LOGIC ---
-if uploaded_file:
-    file_name = uploaded_file.name
-    st.success(f"✅ File '{file_name}' uploaded successfully")
+# ==============================
+# 📊 الرسم الثاني: توزيع الإشارة (Histogram)
+# ==============================
+plt.figure(figsize=(6, 4))
+plt.hist(ecg, bins=30, color='#38bdf8', edgecolor='#0c4a6e', alpha=0.9)
+plt.title('ECG Signal Distribution', fontsize=14, color='#1e293b')
+plt.xlabel('Amplitude (mV)')
+plt.ylabel('Frequency')
+plt.grid(alpha=0.2)
+plt.tight_layout()
+plt.show()
 
-    # Simulate ECG visualization
-    st.subheader("📈 ECG Signal Visualization")
-    t, ecg = simulate_ecg()
-    fig, ax = plt.subplots(figsize=(7, 2))
-    ax.plot(t, ecg, color="#b22222", linewidth=1.2)
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Amplitude (mV)")
-    ax.set_title("Simulated ECG Signal", color="#800000")
-    ax.grid(alpha=0.3)
-    st.pyplot(fig, use_container_width=True)
+# ==============================
+# 💓 الرسم الثالث: ECG Animation (إشارة متحركة)
+# ==============================
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.set_xlim(0, 2)
+ax.set_ylim(min(ecg) - 0.5, max(ecg) + 0.5)
+line, = ax.plot([], [], color='#16a34a', linewidth=2.5)
+ax.set_title('Real-time ECG Simulation', fontsize=15, color='#1e293b')
+ax.set_xlabel('Time (s)')
+ax.set_ylabel('Amplitude (mV)')
+ax.grid(True, linestyle='--', alpha=0.4)
 
-    st.divider()
-    st.subheader("🩺 Model Analysis")
+# تهيئة البيانات المتحركة
+def init():
+    line.set_data([], [])
+    return line,
 
-    # Fake analysis delay
-    with st.spinner("Analyzing ECG signal..."):
-        time.sleep(2)
+# تحديث الإشارة في كل فريم
+def update(frame):
+    start = frame
+    end = frame + 100
+    if end > len(t):
+        end = len(t)
+    line.set_data(t[start:end], ecg[start:end])
+    return line,
 
-    # Randomized smart simulation
-    random.seed(hash(file_name) % 100)
-    risk_score = random.randint(70, 97)  # simulated confidence
+# إنشاء الأنيميشن
+ani = animation.FuncAnimation(
+    fig, update, frames=np.arange(0, len(t)-100), init_func=init,
+    blit=True, interval=25, repeat=True
+)
 
-    if int(hash(file_name)) % 2 == 0:
-        st.markdown(f"<h3 style='color:green;'>💚 Normal Condition</h3>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color:gray;'>AI confidence: <b>{risk_score}%</b></p>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<h3 style='color:red;'>🚨 High Stroke Risk Detected</h3>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color:gray;'>AI confidence: <b>{risk_score}%</b></p>", unsafe_allow_html=True)
-
-    # --- Graph for result comparison ---
-    st.divider()
-    st.subheader("📊 Model Decision Overview")
-
-    labels = ['Normal', 'High Risk']
-    if int(hash(file_name)) % 2 == 0:
-        values = [risk_score, 100 - risk_score]
-    else:
-        values = [100 - risk_score, risk_score]
-
-    fig2, ax2 = plt.subplots(figsize=(4, 4))
-    wedges, texts, autotexts = ax2.pie(
-        values,
-        labels=labels,
-        autopct='%1.1f%%',
-        startangle=90,
-        colors=['#32CD32', '#B22222'],
-        textprops={'color': "white"}
-    )
-    ax2.set_title("AI Classification Result", color="#800000")
-    st.pyplot(fig2, use_container_width=True)
-
-else:
-    st.info("Please upload an ECG file (.hea or .dat) to begin analysis.")
+plt.tight_layout()
+plt.show()
