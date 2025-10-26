@@ -6,22 +6,9 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import streamlit as st
 import wfdb
 import random
-import sys
-import subprocess
-
-# Auto-install missing packages
-def install_if_missing(package):
-    try:
-        __import__(package)
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-for pkg in ["wfdb", "seaborn", "matplotlib", "pandas", "numpy", "streamlit"]:
-    install_if_missing(pkg)
 
 # ============================
 # App UI setup
@@ -104,9 +91,10 @@ if uploaded_ecg:
     accuracy = [73, 82, 90]
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    sns.barplot(x=stages, y=accuracy, palette=["#ef5350", "#e53935", "#b71c1c"], ax=ax)
+    colors = ["#ef5350", "#e53935", "#b71c1c"]
+    ax.bar(stages, accuracy, color=colors)
     for i, v in enumerate(accuracy):
-        ax.text(i, v / 2, f"{v}%", ha='center', color='white', fontweight='bold')
+        ax.text(i, v + 1, f"{v}%", ha='center', color='black', fontweight='bold')
     ax.set_ylim(0, 100)
     ax.set_ylabel("Accuracy (%)")
     ax.set_title("Model Accuracy Improvement", color="#b71c1c")
@@ -130,5 +118,4 @@ else:
 # Footer
 # ============================
 st.divider()
-st.caption("© 2025 Cardiac Pre-Stroke Project")
-
+st.caption("© 2025 Cardiac Pre-Stroke Project | Developed by Kemo ❤️")
