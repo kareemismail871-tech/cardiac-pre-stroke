@@ -8,6 +8,7 @@ import re
 import os
 from wfdb import rdrecord
 import matplotlib.pyplot as plt
+from io import BytesIO
 
 # ----------------------------
 # Page config
@@ -22,13 +23,13 @@ st.caption("Demo mode simulates realistic-looking predictions for presentation/t
 st.sidebar.header("Demo / Simulation Controls")
 demo_mode = st.sidebar.checkbox("Enable demo simulation (override model)", value=True)
 st.sidebar.write("When enabled, odd-numbered records → simulated 'Patient'. Even → simulated 'Not Patient' (with variation).")
-seed = st.sidebar.number_input("Random seed (set for reproducible demo)", value=42, step=1)
-randomness = st.sidebar.slider("Variability range (how much probabilities can vary)", 0.05, 0.4, 0.18, 0.01)
-borderline_chance = st.sidebar.slider("Chance that an even record becomes borderline (%)", 0, 40, 10, 1)
+seed = st.sidebar.number_input("Random seed (reproducible)", value=42, step=1)
+randomness = st.sidebar.slider("Variability range", 0.01, 0.40, 0.18, 0.01)
+borderline_chance = st.sidebar.slider("Chance (percent) that even record is borderline", 0, 40, 10, 1)
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Important:** Simulation mode must be clearly labeled when used in demos. Do not use simulated output for clinical decisions.")
 
-# set seed
+# reproducible randomness
 random.seed(int(seed))
 np.random.seed(int(seed))
 
@@ -65,60 +66,62 @@ def extract_numeric_id(tmp_name):
 def simulate_result_from_id(nid, variability=0.18, borderline_pct=10):
     """
     Produce simulated probability and label depending on numeric id parity.
-    - Odd ids => higher risk distribution (0.55 .. 0.95) with noise
-    - Even ids => lower risk distribution (0.02 .. 0.45) with chance to be borderline
     Returns: prob (0..1), label_str, textual_message, severity_tag
     """
-    # base ranges
     if nid is None:
-        # fallback moderate ambiguity
         base = random.uniform(0.3, 0.6)
         prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
     else:
         if nid % 2 == 1:
-            # odd -> sick, but varied
             base = random.uniform(0.60, 0.92)
             prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
         else:
-            # even -> mostly healthy, but sometimes borderline
             if random.uniform(0,100) < borderline_pct:
-                # borderline case (e.g., mild)
                 base = random.uniform(0.35, 0.55)
             else:
                 base = random.uniform(0.02, 0.32)
             prob = np.clip(base + random.uniform(-variability, variability), 0.0, 0.99)
 
-    # produce label and message
     if prob >= 0.60:
         label = "Patient (SIMULATED)"
-        msg = random.choice([
-            f"🚨 Simulated: High-risk pattern detected. Estimated risk ≈ {prob*100:.1f}%",
-            f"❗ Simulated: Significant abnormality indicators. Risk score: {prob*100:.1f}%"
-        ])
+        msg = f"Simulated high risk — estimated: {prob*100:.1f}%"
         severity = "high"
     elif prob >= 0.35:
         label = "Borderline (SIMULATED)"
-        msg = random.choice([
-            f"⚠️ Simulated: Borderline/observe. Estimated risk ≈ {prob*100:.1f}%",
-            f"⚠️ Simulated: Mild abnormal signals — recommend follow-up. Score: {prob*100:.1f}%"
-        ])
+        msg = f"Simulated borderline — estimated: {prob*100:.1f}%"
         severity = "medium"
     else:
         label = "Not Patient (SIMULATED)"
-        msg = random.choice([
-            f"💚 Simulated: No critical signs detected. Confidence ≈ {(1-prob)*100:.1f}%",
-            f"✅ Simulated: Normal ECG-like pattern. Estimated risk ≈ {prob*100:.1f}%"
-        ])
+        msg = f"Simulated normal — estimated risk: {prob*100:.1f}%"
         severity = "low"
 
     return prob, label, msg, severity
+
+def make_probability_bar_png(prob, severity, width=600, height=80):
+    """Create a horizontal probability bar as PNG bytes"""
+    fig, ax = plt.subplots(figsize=(6,1.2))
+    ax.barh([0], [prob], color="#ff6b6b" if severity!="low" else "#6cc070", height=0.6)
+    ax.set_xlim(0,1)
+    ax.set_yticks([])
+    ax.set_xlabel("Risk probability")
+    ax.set_title("Predicted Risk")
+    txtx = prob + 0.02 if prob < 0.88 else prob - 0.12
+    ax.text(txtx, 0, f"{prob*100:.1f}%", va='center', fontsize=10, fontweight='bold', color='black')
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    buf = BytesIO()
+    plt.tight_layout()
+    fig.savefig(buf, format="png", dpi=120, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 # ----------------------------
 # Main processing when files uploaded
 # ----------------------------
 if hea_file and dat_file:
     tmp = hea_file.name.replace(".hea", "")
-    # write files locally (needed by wfdb.rdrecord)
+    # save uploaded files locally to read with wfdb
     with open(hea_file.name, "wb") as f:
         f.write(hea_file.read())
     with open(dat_file.name, "wb") as f:
@@ -126,18 +129,45 @@ if hea_file and dat_file:
 
     st.write(f"Record: `{tmp}`")
 
-    # attempt to read record for visualization (safe try)
+    # attempt to read record for visualization
     try:
         rec = rdrecord(tmp)
         sig = rec.p_signal
-        # show first channel if multi-channel
-        channel = 0
+        # take first channel for display
         if sig.ndim > 1:
-            y = sig[:, channel]
+            y = sig[:,0]
         else:
             y = sig
-        st.line_chart(y[:2000], height=220)
-        st.caption("ECG preview (first 2000 samples)")
+        st.markdown("**ECG Waveform (first 2000 samples)**")
+        fig_ecg, ax_ecg = plt.subplots(figsize=(8,2))
+        ax_ecg.plot(y[:2000], linewidth=0.8)
+        ax_ecg.set_xlim(0, min(2000, len(y)))
+        ax_ecg.set_ylabel("Amplitude")
+        ax_ecg.set_xlabel("Samples")
+        ax_ecg.set_title("ECG (channel 0)")
+        st.pyplot(fig_ecg)
+        plt.close(fig_ecg)
+
+        # histogram
+        fig_hist, ax_hist = plt.subplots(figsize=(6,2))
+        ax_hist.hist(y, bins=60, alpha=0.9)
+        ax_hist.set_title("Signal Amplitude Distribution")
+        ax_hist.set_xlabel("Amplitude")
+        ax_hist.set_ylabel("Count")
+        st.pyplot(fig_hist)
+        plt.close(fig_hist)
+
+        # mini-sparkline: rolling RMS
+        window = min(500, len(y))
+        if len(y) > 50:
+            rms = np.sqrt(pd.Series(y).rolling(window=50).mean().fillna(method='bfill').values)
+            fig_s, ax_s = plt.subplots(figsize=(6,1.2))
+            ax_s.plot(rms[-200:], linewidth=0.9)
+            ax_s.set_title("RMS (mini)")
+            ax_s.set_yticks([])
+            ax_s.set_xticks([])
+            st.pyplot(fig_s)
+            plt.close(fig_s)
     except Exception as e:
         st.info(f"Could not render full ECG preview (wfdb read error): {e}")
         y = None
@@ -165,16 +195,17 @@ if hea_file and dat_file:
     if demo_mode:
         nid = extract_numeric_id(tmp)
         prob, label, message, severity = simulate_result_from_id(nid, variability=randomness, borderline_pct=borderline_chance)
-        # display prominent simulated banner
+        # prominent simulated banner
         st.error("⚠️ DEMO MODE: This result is SIMULATED — NOT a real clinical diagnosis.")
-        st.markdown(f"**Simulated decision note:** {message}")
-        # Show table
+        st.markdown(f"**Simulated note:** {message}")
+
+        # Build table
         out_df = pd.DataFrame({
             "Record": [tmp],
             "PTB-XL True Label": [true_label_text],
             "Simulated Label": [label],
             "Simulated Probability": [f"{prob*100:.1f}%"],
-            "Note": [ "SIMULATED RESULT - NOT CLINICAL" ]
+            "Note": ["SIMULATED - NOT CLINICAL"]
         })
         st.dataframe(out_df)
 
@@ -192,20 +223,21 @@ if hea_file and dat_file:
                         "<b>SIMULATED NORMAL</b> — For demo only.</div>",
                         unsafe_allow_html=True)
 
-        # probability bar
-        fig, ax = plt.subplots(figsize=(4,2))
-        ax.barh([0], [prob], color="#ff6b6b" if severity!="low" else "#6cc070")
-        ax.set_xlim(0,1)
-        ax.set_yticks([])
-        ax.set_xlabel("Simulated Risk Probability")
-        ax.set_title("Simulated Risk")
-        ax.text(prob + 0.02 if prob < 0.9 else prob - 0.08, 0, f"{prob*100:.1f}%", va='center')
-        st.pyplot(fig)
+        # improved probability bar + download
+        st.markdown("**Simulated Risk Gauge**")
+        prob_img_bytes = make_probability_bar_png(prob, severity)
+        st.image(prob_img_bytes, use_column_width=True)
+
+        # allow download of bar PNG
+        st.download_button("Download probability chart (PNG)", prob_img_bytes, file_name=f"{tmp}_sim_prob.png", mime="image/png")
+
+        # allow download of results CSV
+        csv_buf = out_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download simulated report (CSV)", csv_buf, file_name=f"{tmp}_sim_report.csv", mime="text/csv")
 
     else:
-        # normal (non-demo) flow: we only display model absence message because model path not included here
-        st.info("Demo mode is OFF. Real model inference path not included in this demo snippet.")
-        # If you have a real model loaded you can run inference here and show real prob/label.
+        st.info("Demo mode is OFF. Real model inference path not included in this demo snippet. Upload real model artifacts and enable inference if available.")
+
 else:
     st.info("Please upload both a .hea and a .dat file to run the demo simulation.")
 
