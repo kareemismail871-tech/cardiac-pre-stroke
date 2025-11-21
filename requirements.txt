@@ -1,6 +1,9 @@
 streamlit
+wfdb
 numpy
-pandas
+matplotlib
 joblib
 scikit-learn
-xgboost
+pandas
+scipy
+fpdf
