@@ -4,7 +4,6 @@ import io
 import json
 import random
 import re
-import base64
 from io import BytesIO
 
 import streamlit as st
@@ -14,7 +13,7 @@ from scipy.signal import find_peaks, spectrogram
 from scipy.stats import skew, kurtosis
 import wfdb
 
-# optional ML libs (only used if artifacts exist)
+# Optional ML libs (only used if artifacts exist)
 try:
     import joblib
     from sklearn.impute import SimpleImputer
@@ -38,7 +37,7 @@ except Exception:
 st.set_page_config(page_title="Cardiac Pre-Stroke", page_icon="🩺", layout="wide")
 st.title("🩺 Cardiac Pre-Stroke — AI ECG Analyzer")
 
-# ---------- Utility functions ----------
+# ---------- Utilities ----------
 def fig_to_bytes(fig, dpi=150):
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight', dpi=dpi)
@@ -89,7 +88,7 @@ def safe_load_joblib(path):
         st.warning(f"Could not load {os.path.basename(path)}: {e}")
         return None
 
-# ---------- Model artifact paths (edit if needed) ----------
+# ---------- Artifact paths (adjust if needed) ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "ecg_stack_model_pro.joblib")
 SCALER_PATH = os.path.join(BASE_DIR, "ecg_scaler_pro.joblib")
@@ -97,7 +96,7 @@ IMPUTER_PATH = os.path.join(BASE_DIR, "ecg_imputer_pro.joblib")
 FEATURE_COLS_PATH = os.path.join(BASE_DIR, "feature_columns.json")
 LABEL_ENC_PATH = os.path.join(BASE_DIR, "label_encoder.joblib")
 
-# ---------- Try load artifacts ----------
+# ---------- Try to load artifacts ----------
 model = None
 scaler = None
 imputer = None
@@ -123,29 +122,26 @@ if joblib is not None:
 
     artifacts_available = any([model, scaler, imputer, feature_columns, label_encoder])
 
-# ---------- UI: upload ----------
-st.markdown("Upload `.hea` and `.dat` files (WFDB). If model artifacts are present the app will attempt prediction.")
+# ---------- Upload UI ----------
+st.markdown("Upload a pair of WFDB files: `.hea` and `.dat`. If model artifacts are available the app will attempt a prediction.")
 col1, col2 = st.columns(2)
 with col1:
     hea_file = st.file_uploader("Upload .hea file", type=["hea"])
 with col2:
     dat_file = st.file_uploader("Upload .dat file", type=["dat"])
 
-# ---------- If user uploaded files ----------
+# ---------- Main behavior when files are uploaded ----------
 if hea_file and dat_file:
-    # save temporary files to work with wfdb
+    # Save temporarily and load via wfdb
     try:
-        # write to current dir with the record name
         record_name = hea_file.name.replace('.hea','')
         with open(hea_file.name, "wb") as f:
             f.write(hea_file.read())
         with open(dat_file.name, "wb") as f:
             f.write(dat_file.read())
-        # read record
         record = wfdb.rdrecord(record_name)
         ecg_signal = record.p_signal
         if ecg_signal.ndim > 1:
-            # choose first channel by default
             ecg = np.asarray(ecg_signal[:,0]).astype(float)
         else:
             ecg = np.asarray(ecg_signal).astype(float)
@@ -156,16 +152,16 @@ if hea_file and dat_file:
 
     st.success("Files loaded successfully!")
 
-    # compute figures
-    num_plot = min(len(ecg), 3000)
+    # ---- ECG plot ----
+    nplot = min(len(ecg), 3000)
     fig_ecg, ax = plt.subplots(figsize=(10,3))
-    ax.plot(np.arange(num_plot)/fs, ecg[:num_plot], linewidth=0.9)
+    ax.plot(np.arange(nplot)/fs, ecg[:nplot], linewidth=0.9)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Amplitude")
     ax.grid(alpha=0.15)
     st.pyplot(fig_ecg)
 
-    # RMS
+    # ---- RMS ----
     window = int(min(1000, max(50, int(fs*0.8))))
     rms_vals = np.sqrt(np.convolve(ecg**2, np.ones(window)/window, mode='valid'))
     t_rms = np.linspace(0, len(ecg)/fs, len(rms_vals))
@@ -176,9 +172,10 @@ if hea_file and dat_file:
     axr.grid(alpha=0.15)
     st.pyplot(fig_rms)
 
-    # Heart rate
+    # ---- Heart-rate ----
     peaks, _ = find_peaks(ecg, distance=int(fs*0.3))
     hr_text = "Could not estimate HR (not enough peaks)"
+    fig_hr = None
     if len(peaks) >= 2:
         rr = np.diff(peaks)/fs
         hr = 60.0/rr
@@ -191,7 +188,7 @@ if hea_file and dat_file:
         hr_text = f"Average HR: {np.mean(hr):.1f} BPM"
     st.markdown(f"**{hr_text}**")
 
-    # Spectrogram
+    # ---- Spectrogram ----
     length = min(len(ecg), int(fs*5000))
     f, t_spec, Sxx = spectrogram(ecg[:length], fs=fs, nperseg=256, noverlap=128)
     fig_spec, axs = plt.subplots(figsize=(10,4))
@@ -201,14 +198,14 @@ if hea_file and dat_file:
     fig_spec.colorbar(pcm, ax=axs, label='Power (dB)')
     st.pyplot(fig_spec)
 
-    # Histogram
+    # ---- Histogram ----
     fig_hist, axh2 = plt.subplots(figsize=(6,3))
     axh2.hist(ecg, bins=60, edgecolor='k')
     axh2.set_xlabel("Amplitude")
     axh2.set_ylabel("Count")
     st.pyplot(fig_hist)
 
-    # ROC-like plot (simulated)
+    # ---- ROC-like (simulated) ----
     fig_roc, axroc = plt.subplots(figsize=(6,4))
     fpr = np.linspace(0,1,200)
     tpr = np.sqrt(fpr)
@@ -219,82 +216,103 @@ if hea_file and dat_file:
     axroc.legend()
     st.pyplot(fig_roc)
 
-    # explanation and micro features
+    # ---- micro-features ----
     st.markdown("### Signal micro-features")
     micro = extract_micro_features(ecg, fs=fs)
     micro_names = ["mean","std","min","max","ptp","rms","median","q25","q75","skew","kurtosis"]
     feats = dict(zip(micro_names, [float(x) for x in micro]))
     st.json(feats)
 
-    # Prepare features for model if available
+    # Prepare figures for PDF
     pdf_figs = {
         "ECG Signal": fig_to_bytes(fig_ecg),
         "RMS Trend": fig_to_bytes(fig_rms),
-        "Heart Rate": fig_to_bytes(fig_hr) if 'fig_hr' in locals() else None,
+        "Heart Rate": fig_to_bytes(fig_hr) if fig_hr is not None else None,
         "Spectrogram": fig_to_bytes(fig_spec),
         "Histogram": fig_to_bytes(fig_hist),
         "ROC Curve": fig_to_bytes(fig_roc)
     }
 
-    # ---------- Model prediction if artifacts exist ----------
+    # ---------- Prediction / Risk estimation ----------
     can_predict = (model is not None) and (scaler is not None)
     prediction_result = None
+    risk_percent = None
+    health_state_text = None
+
     if can_predict:
-        # Build feature vector that matches expected columns if possible
-        # Heuristic: if feature_columns exist and length matches, try to build vector
-        base_row = ecg if hasattr(ecg, 'shape') else np.asarray(ecg)
+        st.info("Model artifacts detected — attempting prediction.")
+        base_row = ecg
         micro = extract_micro_features(base_row, fs=fs)
-        # combine base signal summary (downsampled) + micro features OR fallback to micro only
-        # To avoid huge vectors, we will use micro features only unless feature_columns expects more.
         prepared = micro.copy().reshape(1,-1)
-        # if feature_columns exists and expects larger vector, try to pad/truncate
+
+        # Build X_to_model according to feature_columns if provided
         if feature_columns:
             expected_len = len(feature_columns)
             if expected_len == prepared.shape[1]:
                 X_to_model = prepared
                 used_preset = "micro-only (matched)"
             elif expected_len > prepared.shape[1]:
-                # pad with zeros
                 pad = np.zeros(expected_len - prepared.shape[1])
                 X_to_model = np.hstack([prepared.flatten(), pad]).reshape(1,-1)
                 used_preset = f"micro + zeros (padded to {expected_len})"
             else:
-                # truncate if model expects fewer features (rare)
                 X_to_model = prepared.flatten()[:expected_len].reshape(1,-1)
                 used_preset = f"micro truncated to {expected_len}"
         else:
             X_to_model = prepared
             used_preset = "micro-only (no feature_columns.json)"
 
-        st.info(f"Preparing features for prediction using strategy: {used_preset}")
+        st.info(f"Feature preparation strategy: {used_preset}")
 
-        # Apply imputer & scaler safely (handle shape mismatches)
         X_proc = X_to_model.copy()
+        # Imputer
         try:
             if imputer is not None:
-                # check compatibility
-                try:
-                    X_proc = imputer.transform(X_proc)
-                except Exception as e_im:
-                    st.warning(f"Imputer transform failed ({e_im}). Will try fitting a local imputer on current features.")
-                    if SimpleImputer is not None:
-                        local_imp = SimpleImputer(strategy='median')
-                        X_proc = local_imp.fit_transform(X_proc)
-                    else:
-                        st.warning("SimpleImputer not available in runtime; continuing without imputation.")
+                X_proc = imputer.transform(X_proc)
+            else:
+                # try local imputer
+                if SimpleImputer is not None:
+                    local_imp = SimpleImputer(strategy='median')
+                    X_proc = local_imp.fit_transform(X_proc)
+        except Exception as e_imp:
+            st.warning(f"Imputer transform failed ({e_imp}). Using local imputer fallback.")
+            if SimpleImputer is not None:
+                local_imp = SimpleImputer(strategy='median')
+                X_proc = local_imp.fit_transform(X_proc)
+
+        # Scaler
+        try:
             if scaler is not None:
-                try:
-                    X_proc = scaler.transform(X_proc)
-                except Exception as e_sc:
-                    st.warning(f"Scaler transform failed ({e_sc}). Will try fitting a local scaler on current features.")
-                    if StandardScaler is not None:
-                        local_sc = StandardScaler()
-                        X_proc = local_sc.fit_transform(X_proc)
-                    else:
-                        st.warning("StandardScaler not available; continuing without scaling.")
-            # predict
+                X_proc = scaler.transform(X_proc)
+        except Exception as e_sc:
+            st.warning(f"Scaler transform failed ({e_sc}). Using local StandardScaler fallback.")
+            if StandardScaler is not None:
+                local_sc = StandardScaler()
+                X_proc = local_sc.fit_transform(X_proc)
+
+        # Predict
+        try:
             pred = model.predict(X_proc)
-            # if label encoder exists, try to decode
+            # Try predict_proba for risk%
+            prob = None
+            try:
+                if hasattr(model, "predict_proba"):
+                    proba = model.predict_proba(X_proc)
+                    # If multiclass: compute "abnormal" probability as 1 - prob(normal) if 0 is normal
+                    if proba.shape[1] >= 2:
+                        # heuristics: if label 0 = Normal
+                        if 0 < proba.shape[1]:
+                            prob_normal = proba[0,0]
+                            prob_abnormal = 1.0 - prob_normal
+                            prob = prob_abnormal * 100.0
+                        else:
+                            prob = np.max(proba)*100.0
+                    else:
+                        prob = (1.0 - proba[0,0])*100.0
+            except Exception as e_pb:
+                st.warning(f"predict_proba failed: {e_pb}")
+                prob = None
+
             label = None
             if label_encoder is not None:
                 try:
@@ -303,7 +321,6 @@ if hea_file and dat_file:
                 except Exception:
                     label = str(int(pred[0]))
             else:
-                # basic mapping for standard 0..7 labels (adjust if your model uses different mapping)
                 label_map = {
                     0: "Normal ECG",
                     1: "Arrhythmia",
@@ -315,15 +332,82 @@ if hea_file and dat_file:
                     7: "Pericarditis / Electrolyte imbalance"
                 }
                 label = label_map.get(int(pred[0]), f"Class {int(pred[0])}")
+
             prediction_result = {"pred_class": int(pred[0]), "label": label}
             st.success(f"Model prediction: {prediction_result['label']} (class {prediction_result['pred_class']})")
-        except Exception as e_all:
-            st.error(f"Model prediction failed: {e_all}")
-            can_predict = False
-    else:
-        st.warning("Model artifacts not found or incomplete — analysis only (no prediction).")
 
-    # ---------- Download PDF report ----------
+            # If no prob from model, derive simple heuristic risk %
+            if prob is None:
+                # Heuristic: use RMS & ptp to infer an anomaly score (not clinical)
+                rms_val = float(np.sqrt(np.mean(ecg**2)))
+                ptp = float(np.ptp(ecg))
+                # normalize with arbitrary ranges observed in dataset (tunable)
+                rms_score = min(1.0, (rms_val / (np.percentile(ecg, 90) - np.percentile(ecg,10)+1e-6)) )
+                ptp_score = min(1.0, ptp / (np.std(ecg)*6 + 1e-6))
+                est_score = np.clip(0.3*rms_score + 0.7*ptp_score, 0.0, 1.0)
+                prob = float(est_score * 100.0)
+                st.info("Using heuristic risk estimation (model probabilities not available).")
+
+            risk_percent = float(np.clip(prob, 0.0, 100.0))
+
+            # Health state text
+            if "Normal" in label or prediction_result['pred_class'] == 0:
+                health_state_text = ("Likely Normal", "من المحتمل أن الإشارة طبيعية")
+            else:
+                health_state_text = ("Possible Abnormality", "محتمل وجود حالة غير طبيعية — راجع طبيباً")
+
+        except Exception as e_pred:
+            st.error(f"Model prediction failed: {e_pred}")
+            can_predict = False
+
+    else:
+        st.warning("Model artifacts not available — showing analysis only (no ML prediction).")
+        # estimate an anomaly score from RMS/ptp for display
+        rms_val = float(np.sqrt(np.mean(ecg**2)))
+        ptp = float(np.ptp(ecg))
+        # simple normalization (not clinical)
+        est = np.clip((ptp / (np.std(ecg)*6 + 1e-6)), 0.0, 1.0)
+        risk_percent = float(est*100.0)
+        health_state_text = ("Analysis only", "تحليل فقط — الموديل غير متوفر")
+
+    # ---------- Show diagnosis block with risk bar ----------
+    st.markdown("## Quick Diagnosis")
+    colL, colR = st.columns([2,1])
+    with colL:
+        if prediction_result:
+            st.markdown(f"**Prediction:** {prediction_result['label']}  ")
+            st.markdown(f"**Class:** {prediction_result['pred_class']}")
+        else:
+            st.markdown("**Prediction:** N/A")
+        # bilingual health state
+        if isinstance(health_state_text, tuple):
+            st.markdown(f"**Status:** {health_state_text[0]} — **حالة:** {health_state_text[1]}")
+        else:
+            st.markdown(f"**Status:** {health_state_text}")
+
+        # textual guidance
+        if prediction_result and (prediction_result['pred_class'] != 0):
+            st.markdown("**Recommendation:** Seek medical evaluation. This is an AI screening not a diagnosis. | التوصية: راجع الطبيب فورًا إن أمكن.")
+        elif prediction_result and (prediction_result['pred_class'] == 0):
+            st.markdown("**Recommendation:** Low immediate risk. Continue routine follow-up. | التوصية: متابعة دورية.")
+        else:
+            st.markdown("**Recommendation:** Based on signal analysis only. Consider clinical follow-up if concerned. | التوصية: إن كنت قلقًا راجع طبيبًا.")
+
+    with colR:
+        # Risk bar (horizontal)
+        rp = risk_percent if risk_percent is not None else 0.0
+        fig_bar, ax_bar = plt.subplots(figsize=(4,0.9))
+        ax_bar.barh([0], [rp], height=0.6, color='#ff4c4c' if rp>50 else '#2ecc71')
+        ax_bar.set_xlim(0,100)
+        ax_bar.set_yticks([])
+        ax_bar.set_xticks([0,25,50,75,100])
+        for spine in ax_bar.spines.values(): spine.set_visible(False)
+        ax_bar.text(rp + (-8 if rp > 90 else 2), 0, f"{rp:.1f}%", va='center', fontweight='bold', color='white', bbox=dict(facecolor=('#ff4c4c' if rp>50 else '#2ecc71'), boxstyle='round,pad=0.2'))
+        fig_bar.patch.set_alpha(0)
+        st.pyplot(fig_bar)
+
+    # ----------
+    # PDF report generation UI
     st.markdown("### Generate PDF report")
     if st.button("Generate & Download PDF report"):
         if not PIL_AVAILABLE:
@@ -336,9 +420,8 @@ if hea_file and dat_file:
             normal = styles["Normal"]
             story = []
             story.append(Spacer(1,20))
-            story.append(Paragraph("🩺 <b>Cardiac Pre-Stroke - Report</b>", title_style))
+            story.append(Paragraph("🩺 Cardiac Pre-Stroke - Report", title_style))
             story.append(Spacer(1,8))
-            # cover heart image
             heart_buf = make_heart_png(width=420, height=220, fill_color="#eef6ff")
             if heart_buf:
                 try:
@@ -347,17 +430,15 @@ if hea_file and dat_file:
                     story.append(Spacer(1,12))
                 except Exception:
                     story.append(Paragraph("(Heart image not available)", normal))
-            # quick summary
             story.append(Paragraph(f"Record: {hea_file.name}", normal))
             if prediction_result:
                 story.append(Paragraph(f"Model Prediction: {prediction_result['label']} (class {prediction_result['pred_class']})", normal))
             else:
                 story.append(Paragraph("Model Prediction: N/A (artifacts missing)", normal))
+            story.append(Paragraph(f"Risk estimate: {risk_percent:.1f}%", normal))
             story.append(Spacer(1,10))
-            # attach figures
             for name, b in pdf_figs.items():
-                if b is None:
-                    continue
+                if b is None: continue
                 story.append(Paragraph(f"<b>{name}</b>", styles["Heading3"]))
                 try:
                     b.seek(0)
@@ -371,4 +452,4 @@ if hea_file and dat_file:
             buffer.seek(0)
             st.download_button("⬇️ Download PDF", data=buffer.getvalue(), file_name="Cardiac_PreStroke_Report.pdf", mime="application/pdf")
 else:
-    st.info("Upload both .hea and .dat files to start. If you already uploaded files earlier but they expired, please upload again.")
+    st.info("Upload both .hea and .dat files to start. If previous uploads expired, please upload again.")
