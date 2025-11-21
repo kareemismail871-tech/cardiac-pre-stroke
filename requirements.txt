@@ -1,9 +1,9 @@
-streamlit
-wfdb
+streamlit>=1.25.0
 numpy
 matplotlib
+scipy
+wfdb
+reportlab
+Pillow
 joblib
 scikit-learn
-pandas
-scipy
-fpdf
